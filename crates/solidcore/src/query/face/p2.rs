@@ -616,7 +616,7 @@ impl Default for PointClassifyOptions<'_> {
 /// trimmed surface cache answers first when it is up to date; then the point's
 /// surface position is tested against every face vertex (within the larger of the
 /// face, vertex and `pc` tolerances), then the point against every loop
-/// ([`crate::query::r#loop::contains_uv_point`]). With `tgt_loops_only`, only the
+/// (`query::loop::contains_uv_point`). With `tgt_loops_only`, only the
 /// selected loops (and their vertices) are used. `pc` keeps its other members; its
 /// tolerance (`GetTolerance`) enters the vertex and loop tolerances.
 ///
@@ -626,7 +626,7 @@ impl Default for PointClassifyOptions<'_> {
 /// on the checked loops (a loop that cannot classify it, or only inner loops checked
 /// without the point being outside all of them); `SM_ERR_NULL_POINTER` for a face
 /// without surface; those of the trimmed surface cache search, of [`face_vertices`]
-/// and [`crate::query::r#loop::contains_uv_point`]; [`SolidError::InvalidInput`] for an
+/// and `query::loop::contains_uv_point`; [`SolidError::InvalidInput`] for an
 /// on-boundary edge without curve.
 pub fn point_classify(
     k: &Kernel,
@@ -1364,7 +1364,22 @@ impl<O: ClassObject, G: ClassGeometry<O>> ClassGeometry<O> for WithMadeTrimCurve
         self.inner.classification_vertex_point(vertex)
     }
     fn topology_zone_tol_3d(&self, object: O) -> Option<f64> {
-        self.inner.topology_zone_tol_3d(object)
+        // `SmTol::GetZoneTol3d` of an entity of the face's B-rep reads it as the
+        // classification has left it: the trimmed cache it builds on the snapshot
+        // (`smsurf_GetSurfaceCache`, upstream on the face's own B-rep) can raise vertex
+        // and edge tolerances
+        match self.inner.topology_entity(object) {
+            Some((b, e)) if core::ptr::eq(b, self.brep) => {
+                let s: &Brep = self.snapshot;
+                match e {
+                    EntityRef::Vertex(v) => s.vertex(v).ok().map(|v| v.tolerance),
+                    EntityRef::Edge(ed) => s.edge(ed).ok().map(|ed| ed.tolerance),
+                    EntityRef::Face(f) => s.face(f).ok().map(|f| f.tolerance),
+                    _ => self.inner.topology_zone_tol_3d(object),
+                }
+            }
+            _ => self.inner.topology_zone_tol_3d(object),
+        }
     }
     fn vertex_face_gap(&self, vertex: O, surface: &Surface, face: Option<O>) -> Option<f64> {
         self.inner.vertex_face_gap(vertex, surface, face)

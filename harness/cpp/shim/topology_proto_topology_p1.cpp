@@ -19,6 +19,9 @@
 // that would not terminate) writes `op -2` and ends the script (the difftest generator
 // drops such ops). Objects live for the whole process unless upstream deletes them.
 #include "sc_shim.h"
+#include "support/primitive_record.h"
+#include <SmApiPrimitives.h>
+#include <SmApiQueries.h>
 
 #include "StdAfx.h"
 #include <SmApiGeneral.h>
@@ -625,6 +628,9 @@ struct PolyVertexHead
     friend type get(PolyVertexHead);
 };
 template struct Rob<PolyVertexHead, &SmPolyBrep::m_pPolyVertexListHead>;
+
+struct BrepModelSize { using type = double (SmBrep::*)(SmBoolean) const; friend type get(BrepModelSize); };
+template struct Rob<BrepModelSize, &SmBrep::GetThisModelSizeEstimate>;
 
 // ---- reading -------------------------------------------------------------------------------
 
@@ -5007,6 +5013,11 @@ enum TObj : int64_t
     T_COMPOSITE = 7,
     T_CRV_ON_SURF = 8,
     T_POLY_PTS = 9,
+    T_PRIMITIVE_BOX = 10,
+    T_PRIMITIVE_SPHERE = 11,
+    T_CALLER_FACE = 12,
+    T_COPIED_BOX = 13,
+    T_COPIED_SPHERE = 14,
 };
 
 // SmCrvOnSurf's UV-line constructor is protected.
@@ -5016,83 +5027,9 @@ public:
     ScCos(SmPoint2d& a, SmPoint2d& b, SmSurface& s, const SmContext* ctx) : SmCrvOnSurf(a, b, s, NULL, 0, ctx) {}
 };
 
-int32_t run_transform(Rd& rd, std::vector<double>& o)
+int32_t apply_transform_op(Rd& rd, SmObject* obj, SmApiStatus& s)
 {
-    const SmContext& ctx = the_context();
-    int64_t kind = rd.idx();
-    SmObject* obj = NULL;
-    switch (kind)
-    {
-    case T_CURVE:
-    {
-        bool owned = rd.flag();
-        SmCurve* c = read_curve(rd, ctx);
-        if (owned)
-            c->SetOwner(anchor());
-        obj = c;
-        break;
-    }
-    case T_PLANE:
-    case T_BSURF:
-    {
-        bool owned = rd.flag();
-        SmSurface* s = read_surface(rd, ctx, kind == T_PLANE ? 1 : 2);
-        if (owned)
-            s->SetOwner(anchor());
-        obj = s;
-        break;
-    }
-    case T_BREP: obj = new (ctx) SmBrep(); break;
-    case T_POLY: obj = new (ctx) SmPolyBrep(SmZoneTol3d(1.0e-5)); break;
-    case T_POLY_PTS:
-    {
-        SmPolyBrep* b = new (ctx) SmPolyBrep(SmZoneTol3d(1.0e-5));
-        int64_t n = rd.idx();
-        for (int64_t i = 0; i < n && i < 4 && !rd.bad; i++)
-        {
-            SmVector3d p = rd.vec();
-            double t = rd.num();
-            SmPolyVertex* v = new (b) SmPolyVertex(p, t);
-            (b->*get(PolyVertexHead()))->PostInsert(v);
-        }
-        obj = b;
-        break;
-    }
-    case T_OTHER: obj = new (ctx) ScOwning(); break;
-    case T_NULL: obj = NULL; break;
-    case T_COMPOSITE:
-    {
-        bool owned = rd.flag();
-        int64_t n = rd.idx();
-        SmTArray<SmCurve*> curves;
-        for (int64_t i = 0; i < n && i < 4 && !rd.bad; i++)
-            curves.Add(read_curve(rd, ctx));
-        SmCompositeCurve* c = new (ctx) SmCompositeCurve(3, curves, FALSE, NULL, NULL);
-        if (owned)
-            c->SetOwner(anchor());
-        obj = c;
-        break;
-    }
-    case T_CRV_ON_SURF:
-    {
-        bool owned = rd.flag();
-        SmSurface* s = read_surface(rd, ctx, 2);
-        double a0 = rd.num();
-        double a1 = rd.num();
-        double b0 = rd.num();
-        double b1 = rd.num();
-        SmPoint2d a(a0, a1);
-        SmPoint2d b(b0, b1);
-        SmCurve* c = new (ctx) ScCos(a, b, *s, &ctx);
-        if (owned)
-            c->SetOwner(anchor());
-        obj = c;
-        break;
-    }
-    default: return SC_ERR_ARG;
-    }
     int64_t op = rd.idx();
-    SmApiStatus s = 0;
     switch (op)
     {
     case 0:
@@ -5143,7 +5080,137 @@ int32_t run_transform(Rd& rd, std::vector<double>& o)
     }
     default: return SC_ERR_ARG;
     }
+    return SC_OK;
+}
+
+void append_constructed_transform_record(std::vector<double>& o, SmBrep* body)
+{
+        SmTArray<SmVertex*> vertices; body->GetVertices(vertices);
+        SmTArray<SmEdge*> edges; body->GetEdges(edges);
+        SmTArray<SmFace*> faces; body->GetFaces(faces);
+        o.insert(o.end(), {(double)vertices.GetSize(), (double)edges.GetSize(), (double)faces.GetSize(), (body->*get(BrepModelSize()))(FALSE)});
+        primitive_record::append(o,body);
+        for (ULONG i=0;i<faces.GetSize();i++) o.push_back((double)faces[i]->GetRectangularTrim());
+}
+
+int32_t run_transform(Rd& rd, std::vector<double>& o)
+{
+    const SmContext& ctx = the_context();
+    int64_t kind = rd.idx();
+    SmObject* obj = NULL;
+    SmBrep* source = NULL;
+    std::vector<double> source_before;
+    switch (kind)
+    {
+    case T_CURVE:
+    {
+        bool owned = rd.flag();
+        SmCurve* c = read_curve(rd, ctx);
+        if (owned)
+            c->SetOwner(anchor());
+        obj = c;
+        break;
+    }
+    case T_PLANE:
+    case T_BSURF:
+    {
+        bool owned = rd.flag();
+        SmSurface* s = read_surface(rd, ctx, kind == T_PLANE ? 1 : 2);
+        if (owned)
+            s->SetOwner(anchor());
+        obj = s;
+        break;
+    }
+    case T_PRIMITIVE_BOX:
+    case T_PRIMITIVE_SPHERE:
+    case T_COPIED_BOX:
+    case T_COPIED_SPHERE:
+    {
+        SmPoint3d origin = rd.vec(); SmBrep* body = NULL; SmApiStatus created;
+        if (kind == T_PRIMITIVE_BOX || kind == T_COPIED_BOX) {
+            double x=rd.num(), y=rd.num(), z=rd.num();
+            created = SmApiCreateBox(origin, x, y, z, body);
+        } else { double radius=rd.num(); created=SmApiCreateSphere(origin, radius, body); }
+        if (created != SM_SUCCESS || !body) { o.push_back((double)created); delete body; return SC_OK; }
+        if (kind == T_COPIED_BOX || kind == T_COPIED_SPHERE) {
+            source = body; primitive_record::append(source_before, source);
+            SmBrep* copy = NULL; auto copied = SmApiBrepCopy(source, copy);
+            if (copied != SM_SUCCESS || !copy) { o.push_back((double)copied); delete copy; delete source; return SC_OK; }
+            body = copy;
+        }
+        obj = body; break;
+    }
+    case T_CALLER_FACE:
+    {
+        SmPoint3d origin=rd.vec(); double width=rd.num(), height=rd.num();
+        SmBrep* body=new(ctx) SmBrep(); SmFace* face=NULL;
+        SmPlane* surface=new(ctx) SmPlane(origin,SmVector3d(0,0,1),&ctx);
+        SmStatus created=body->CreateFaceFromSurface(surface,SmExtent2d(0,0,width,height),face);
+        if(created!=SM_SUCCESS || !face) { o.push_back((double)created); delete body; return SC_OK; }
+        obj=body; break;
+    }
+    case T_BREP: obj = new (ctx) SmBrep(); break;
+    case T_POLY: obj = new (ctx) SmPolyBrep(SmZoneTol3d(1.0e-5)); break;
+    case T_POLY_PTS:
+    {
+        SmPolyBrep* b = new (ctx) SmPolyBrep(SmZoneTol3d(1.0e-5));
+        int64_t n = rd.idx();
+        for (int64_t i = 0; i < n && i < 4 && !rd.bad; i++)
+        {
+            SmVector3d p = rd.vec();
+            double t = rd.num();
+            SmPolyVertex* v = new (b) SmPolyVertex(p, t);
+            (b->*get(PolyVertexHead()))->PostInsert(v);
+        }
+        obj = b;
+        break;
+    }
+    case T_OTHER: obj = new (ctx) ScOwning(); break;
+    case T_NULL: obj = NULL; break;
+    case T_COMPOSITE:
+    {
+        bool owned = rd.flag();
+        int64_t n = rd.idx();
+        SmTArray<SmCurve*> curves;
+        for (int64_t i = 0; i < n && i < 4 && !rd.bad; i++)
+            curves.Add(read_curve(rd, ctx));
+        SmCompositeCurve* c = new (ctx) SmCompositeCurve(3, curves, FALSE, NULL, NULL);
+        if (owned)
+            c->SetOwner(anchor());
+        obj = c;
+        break;
+    }
+    case T_CRV_ON_SURF:
+    {
+        bool owned = rd.flag();
+        SmSurface* s = read_surface(rd, ctx, 2);
+        double a0 = rd.num();
+        double a1 = rd.num();
+        double b0 = rd.num();
+        double b1 = rd.num();
+        SmPoint2d a(a0, a1);
+        SmPoint2d b(b0, b1);
+        SmCurve* c = new (ctx) ScCos(a, b, *s, &ctx);
+        if (owned)
+            c->SetOwner(anchor());
+        obj = c;
+        break;
+    }
+    default: return SC_ERR_ARG;
+    }
+    SmApiStatus s = 0;
+    int32_t applied = apply_transform_op(rd, obj, s);
+    if (applied != SC_OK) return applied;
     o.push_back((double)s);
+    if (kind == T_PRIMITIVE_BOX || kind == T_PRIMITIVE_SPHERE || kind == T_CALLER_FACE || kind == T_COPIED_BOX || kind == T_COPIED_SPHERE) {
+        append_constructed_transform_record(o, (SmBrep*)obj);
+    }
+    if (source) {
+        o.insert(o.end(), source_before.begin(), source_before.end());
+        primitive_record::append(o, source);
+        delete (SmBrep*)obj; obj = NULL;
+        delete source;
+    }
     if (kind == T_CURVE)
         put_curve(o, (SmCurve*)obj);
     else if (kind == T_PLANE || kind == T_BSURF)
@@ -5168,6 +5235,44 @@ int32_t run_transform(Rd& rd, std::vector<double>& o)
     return SC_OK;
 }
 
+int32_t run_transform_sequence(Rd& rd, std::vector<double>& o)
+{
+    const SmContext& ctx = the_context();
+    const int64_t kind = rd.idx();
+    SmBrep* body = NULL;
+    SmApiStatus created = SM_SUCCESS;
+    if (kind == T_PRIMITIVE_BOX) {
+        SmPoint3d origin = rd.vec();
+        double x=rd.num(), y=rd.num(), z=rd.num();
+        created = SmApiCreateBox(origin, x, y, z, body);
+    } else if (kind == T_PRIMITIVE_SPHERE) {
+        SmPoint3d origin = rd.vec(); double radius=rd.num();
+        created = SmApiCreateSphere(origin, radius, body);
+    } else if (kind == T_CALLER_FACE) {
+        SmPoint3d origin=rd.vec(); double width=rd.num(), height=rd.num();
+        body=new(ctx) SmBrep(); SmFace* face=NULL;
+        SmPlane* surface=new(ctx) SmPlane(origin,SmVector3d(0,0,1),&ctx);
+        created=body->CreateFaceFromSurface(surface,SmExtent2d(0,0,width,height),face);
+        if (!face && created == SM_SUCCESS) created=SM_ERR_NULL_POINTER;
+    } else { return SC_ERR_ARG; }
+    if (created != SM_SUCCESS || !body) { delete body; return SC_ERR_ARG; }
+    const int64_t count=rd.idx();
+    if (rd.bad || count<2 || count>8) { delete body; return SC_ERR_ARG; }
+    o.push_back((double)count);
+    for (int64_t i=0; i<count; i++) {
+        SmApiStatus status=0;
+        const int32_t applied=apply_transform_op(rd,body,status);
+        if (applied!=SC_OK) { delete body; return applied; }
+        std::vector<double> record;
+        append_constructed_transform_record(record,body);
+        o.push_back((double)status);
+        o.push_back((double)record.size());
+        o.insert(o.end(),record.begin(),record.end());
+    }
+    delete body;
+    return SC_OK;
+}
+
 int32_t run(Rd& rd, std::vector<double>& o)
 {
     int64_t kind = rd.idx();
@@ -5177,6 +5282,7 @@ int32_t run(Rd& rd, std::vector<double>& o)
     case 0: s = run_list(rd, o); break;
     case 1: s = run_proto(rd, o); break;
     case 2: s = run_transform(rd, o); break;
+    case 3: s = run_transform_sequence(rd, o); break;
     default: return SC_ERR_ARG;
     }
     if (s != SC_OK)

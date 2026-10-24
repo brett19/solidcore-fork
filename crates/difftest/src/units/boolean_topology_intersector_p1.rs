@@ -1081,6 +1081,21 @@ impl ClassGeometry<H> for Objs<'_> {
     fn point(&self, o: H) -> Option<Point3> {
         ClassGeometry::point(self.two, o)
     }
+    // the topology handles are those of the pair, so the classification's topology
+    // members (`SmVertex::GetTolerance`, `SmEdge::GetTolerance`, ...) reach the same
+    // entities through either adapter
+    fn classification_vertex_point(&self, o: H) -> Option<Point3> {
+        self.two.classification_vertex_point(o)
+    }
+    fn topology_zone_tol_3d(&self, o: H) -> Option<f64> {
+        self.two.topology_zone_tol_3d(o)
+    }
+    fn topology_entity(&self, o: H) -> Option<(&Brep, EntityRef)> {
+        self.two.topology_entity(o)
+    }
+    fn topology_handle_in(&self, brep: &Brep, entity: EntityRef) -> Option<H> {
+        self.two.topology_handle_in(brep, entity)
+    }
 }
 
 impl CurveOnClassifyObjects<H> for Objs<'_> {
@@ -1116,6 +1131,14 @@ impl CurveOnClassifyObjects<H> for Objs<'_> {
 }
 
 impl ProtoBrep<H> for Two {
+    fn merge_point_class_into_brep(
+        &mut self,
+        k: &mut Kernel,
+        pc: &mut PointClassification<H>,
+        src_point: Point3,
+    ) -> solidcore::Result<solidcore::intersect::point_class::MergeOutputs<H>> {
+        solidcore::intersect::curve_class::p6::merge_into_object_mut(k, self, pc, src_point)
+    }
     fn brep_squeeze_edge(
         &mut self,
         k: &mut Kernel,
@@ -2034,6 +2057,7 @@ fn own_geometry(b: &mut Brep, slot: usize) {
         if let Some(surface) = b.face_mut(f).ok().and_then(|x| x.surface.as_mut()) {
             let _ = surface.set_owner(Some(query_key(slot, CacheObject::Face(f))));
         }
+        let _ = b.sync_face_surface_tolerance(f);
     }
 }
 
