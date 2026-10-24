@@ -959,7 +959,10 @@ pub fn loop_edgeuses(b: &Brep, l: LoopId) -> Result<Vec<EdgeuseId>> {
 }
 
 /// The identity a topology entity is notified under by [`face_notify_edit`]: its type
-/// code and arena index (the B-rep keeps no attributes for it to select).
+/// code and arena index (the B-rep keeps no attributes for it to select). Edges, faces
+/// and vertices own their geometry under it, and
+/// [`arena_identity`](crate::topology::brep_cache::arena_identity) gives the same
+/// identity, so the B-rep queries keyed by that find the geometry of B-reps built here.
 pub(crate) fn notify_ref(e: EntityRef) -> ObjectRef {
     let (type_code, kind, index) = match e {
         EntityRef::Brep(x) => (16011, 0u64, x.index()),

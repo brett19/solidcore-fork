@@ -727,21 +727,25 @@ impl crate::intersect::point_class::ClassObject for CacheObject {
     }
 }
 
-/// Conventional identities for a single B-rep: the type code and raw arena index.
-/// Callers using other `ObjectKey`s pass their own mapping to build/resize instead.
+/// Conventional identities for a single B-rep: the identity its edges, faces and
+/// vertices are notified under and own their geometry under
+/// ([`notify_ref`](crate::topology::loopuse::notify_ref): class type code and a key unique
+/// across kinds); a curve or surface is keyed by its edge or face, any other object by
+/// the B-rep. Upstream compares object pointers, so the B-reps this crate builds
+/// (primitives, sweeps, arena-notified edits) and the ones its importers set owners on
+/// share this one identity, and a query keyed by it finds their geometry. Callers using
+/// other `ObjectKey`s pass their own mapping to build/resize instead.
 pub fn arena_identity(object: CacheObject) -> object::ObjectRef {
-    use crate::geom::attribute::ObjectKey;
-    let (type_code, key) = match object {
-        CacheObject::Edge(e) | CacheObject::Curve(e) => (edge::TYPE, u64::from(e.index())),
-        CacheObject::Face(f) | CacheObject::Surface(f) => {
-            (crate::topology::face::p2::TYPE, u64::from(f.index()))
-        }
-        CacheObject::Vertex(v) => (crate::topology::vertex::TYPE, u64::from(v.index())),
-        _ => (BREP_TYPE, 0),
-    };
-    object::ObjectRef {
-        type_code,
-        key: ObjectKey(key),
+    use crate::error::EntityRef;
+    use crate::topology::loopuse::notify_ref;
+    match object {
+        CacheObject::Edge(e) | CacheObject::Curve(e) => notify_ref(EntityRef::Edge(e)),
+        CacheObject::Face(f) | CacheObject::Surface(f) => notify_ref(EntityRef::Face(f)),
+        CacheObject::Vertex(v) => notify_ref(EntityRef::Vertex(v)),
+        _ => object::ObjectRef {
+            type_code: BREP_TYPE,
+            key: crate::geom::attribute::ObjectKey(0),
+        },
     }
 }
 

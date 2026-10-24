@@ -287,13 +287,7 @@ fn add_wire(k: &Kernel, b: &mut Brep, data: [f64; 9]) -> SolidResult<solidcore::
     let shell = b.add_shell_record(Shell::default())?;
     let edge = b.add_edge_record(Edge::new([first, last]))?;
     let mut curve = Curve::from(Line::create_line_segment(3, a, c, None)?);
-    curve.set_owner(
-        Some(ObjectRef {
-            type_code: solidcore::topology::edge::TYPE,
-            key: ObjectKey(1000000000 + u64::from(edge.index())),
-        }),
-        None,
-    );
+    curve.set_owner(Some(identity(CacheObject::Edge(edge))), None);
     let e1 = b.add_edgeuse_record(Edgeuse {
         edge: Some(edge),
         owner: EdgeuseOwner::Shell(Some(shell)),

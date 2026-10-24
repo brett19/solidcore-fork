@@ -1433,7 +1433,11 @@ fn run_rust_op(
                     // the surfaces' owners (`GetOwner()`), as face indices
                     let owners: Vec<f64> = bp1::surfaces(b, gf)?
                         .iter()
-                        .map(|s| s.owner().map_or(-1.0, |o| o.key.0 as f64))
+                        .map(|s| {
+                            s.owner().map_or(-1.0, |o| {
+                                owner_index(b.faces().ids().map(|id| (id.index(), CacheObject::Face(id))), o)
+                            })
+                        })
                         .collect();
                     let mut v = vec![owners.len() as f64];
                     v.extend(owners);
@@ -1443,7 +1447,11 @@ fn run_rust_op(
                     // the curves' owners (`GetOwner()`), as edge indices
                     let owners: Vec<f64> = bp1::curves(b, gf)?
                         .iter()
-                        .map(|c| c.owner().map_or(-1.0, |o| o.key.0 as f64))
+                        .map(|c| {
+                            c.owner().map_or(-1.0, |o| {
+                                owner_index(b.edges().ids().map(|id| (id.index(), CacheObject::Edge(id))), o)
+                            })
+                        })
                         .collect();
                     let mut v = vec![owners.len() as f64];
                     v.extend(owners);
@@ -2410,4 +2418,20 @@ impl UnitDiff for Runner {
         };
         serde_json::to_value(i).ok()
     }
+}
+
+/// The arena index of the face or edge among `objects` whose
+/// [`arena_identity`] (the identity the
+/// import owns geometry under) is `owner`, as the shim's object index of `GetOwner()`;
+/// `-2` for an owner outside the B-rep.
+fn owner_index(
+    objects: impl Iterator<Item = (u32, CacheObject)>,
+    owner: ObjectRef,
+) -> f64 {
+    for (index, object) in objects {
+        if arena_identity(object) == owner {
+            return f64::from(index);
+        }
+    }
+    -2.0
 }

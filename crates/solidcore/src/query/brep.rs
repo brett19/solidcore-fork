@@ -1140,33 +1140,41 @@ mod tests {
     }
 
     /// A unit box from `create_box` without its UV trims (upstream's classification
-    /// makes the ones its loop walks reach), and a query under the box's own keys
-    /// (`notify_ref`, as `create_box` owns its geometry).
+    /// makes the ones its loop walks reach), and the default query: `create_box` owns
+    /// its geometry under the same identity ([`arena_identity`]).
     fn box_without_trims(k: &mut Kernel) -> (Brep, BrepQuery<'static>) {
-        fn keys(o: CacheObject) -> ObjectRef {
-            use crate::topology::loopuse::notify_ref;
-            match o {
-                CacheObject::Edge(e) | CacheObject::Curve(e) => notify_ref(EntityRef::Edge(e)),
-                CacheObject::Face(f) | CacheObject::Surface(f) => notify_ref(EntityRef::Face(f)),
-                CacheObject::Vertex(v) => notify_ref(EntityRef::Vertex(v)),
-                _ => notify_ref(EntityRef::Brep(BrepId::from_index(0))),
-            }
-        }
-        fn no_owner(_: ObjectRef) -> Option<ObjectRef> {
-            None
-        }
         let mut b =
             crate::primitive::api_primitives::create_box(k, Point3::ZERO, 1.0, 1.0, 1.0).unwrap();
         let uses: Vec<_> = b.edgeuses().ids().collect();
         for u in uses {
             b.edgeuse_mut(u).unwrap().uv_trim_curve = None;
         }
-        let query = BrepQuery::new(BrepIdentity {
-            brep_id: BrepId::from_index(0),
-            keys: &keys,
-            owner_of: &no_owner,
-        });
-        (b, query)
+        (b, BrepQuery::default())
+    }
+
+    /// The default query (the merge's) finds a created box's surfaces: a point inside
+    /// is in the box's solid region, one outside in the infinite region.
+    #[test]
+    fn default_query_classifies_a_created_box() {
+        let mut k = Kernel::default();
+        let mut b =
+            crate::primitive::api_primitives::create_box(&mut k, Point3::ZERO, 10.0, 10.0, 10.0)
+                .unwrap();
+        let solid = b
+            .regions()
+            .ids()
+            .find(|&r| Some(r) != b.infinite_region())
+            .map(EntityRef::Region);
+        let infinite = b.infinite_region().map(EntityRef::Region);
+        let query = BrepQuery::default();
+        let inside = query
+            .point_3d_classify(&k, &mut b, Point3::new(5.0, 5.0, 5.0), 1e-6, false)
+            .unwrap();
+        assert_eq!(inside.object(), solid);
+        let outside = BrepQuery::default()
+            .point_3d_classify(&k, &mut b, Point3::new(15.0, 5.0, 5.0), 1e-6, false)
+            .unwrap();
+        assert_eq!(outside.object(), infinite);
     }
 
     fn trim_count(b: &Brep) -> usize {

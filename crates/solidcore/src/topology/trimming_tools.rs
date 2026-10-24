@@ -244,8 +244,8 @@ fn brep_set_tolerance(k: &Kernel, b: &mut Brep, tol: f64) -> Result<()> {
 }
 
 /// `SmBrep::MakeFaceWithCurves(region, loops, 3d curves, NULL, ...)` (unit
-/// `topology.brep_p7`). The new face owns the surface under the face identity
-/// `(SmFace_TYPE, 1 + index)`.
+/// `topology.brep_p7`). The new face owns the surface under its notification identity
+/// (`env.key_of`), as upstream the surface's owner is the face itself.
 fn make_face_with_curves(
     k: &mut Kernel,
     b: &mut Brep,
@@ -269,10 +269,8 @@ fn make_face_with_curves(
         orientations,
         loop_points,
     };
-    let face_ref = |f: FaceId| crate::geom::object::ObjectRef {
-        type_code: fp2::TYPE,
-        key: crate::geom::attribute::ObjectKey(1 + u64::from(f.index())),
-    };
+    let key_of = env.key_of;
+    let face_ref = |f: FaceId| key_of(EntityRef::Face(f));
     let made = crate::topology::brep::p7::make_face_with_curves(
         k,
         b,
@@ -291,8 +289,8 @@ fn make_face_with_curves(
 }
 
 /// `SmBrep::MakeFacesWithCurves(region, loops, 3d curves, NULL, ...)` (unit
-/// `topology.brep_p8`). The new faces own their surfaces under the face identities
-/// `(SmFace_TYPE, 1 + index)`, as [`make_face_with_curves`].
+/// `topology.brep_p8`). The new faces own their surfaces under their
+/// notification identities (`env.key_of`), as [`make_face_with_curves`].
 fn make_faces_with_curves(
     k: &mut Kernel,
     b: &mut Brep,
@@ -316,10 +314,8 @@ fn make_faces_with_curves(
         orientations,
         loop_points,
     };
-    let face_ref = |f: FaceId| crate::geom::object::ObjectRef {
-        type_code: fp2::TYPE,
-        key: crate::geom::attribute::ObjectKey(1 + u64::from(f.index())),
-    };
+    let key_of = env.key_of;
+    let face_ref = |f: FaceId| key_of(EntityRef::Face(f));
     let mut marks = crate::topology::topology_traverser::Marks::default();
     let mut fenv = crate::topology::brep::p8::FaceBuildEnv {
         env,
