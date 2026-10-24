@@ -19069,3 +19069,43 @@ other operand in the merge editing stages (`boolean.merge_p4` /
 `boolean.merge_p2` classification): the contained shell's faces are dropped instead
 of being kept reversed as a void. Listed in `known_mismatches.toml`; the offset
 port itself is not involved after the shell is built.
+
+## B-rep geometry owners: one topology identity (resolves "boolean.api_brep: the merge cannot ray-fire through a created operand") (2026-10-24)
+
+- **Schemes found.** Geometry owners and the keys that look them up came from five
+  topology identities: `brep_cache::arena_identity` (`(TYPE, index)` for edges, faces
+  and vertices only; keys collide across kinds), `topology::loopuse::notify_ref`
+  (`(TYPE, 1 + kind << 32 + index)`, every kind, unique; the `key_of` of every
+  arena-notified edit, so the owner of everything the primitive constructors, sweeps
+  and those edits bind), the kernel-named `topology::brep::p3::topology_ref(serial, e)`
+  (`with_kernel_callbacks` edits), the merge's `NotificationKeys::Namespace` (bridged by
+  `GeometryOwnerScope`), and an ad-hoc `(SmFace_TYPE, 1 + index)` face owner in
+  `topology::trimming_tools`.
+- **Fix.** `arena_identity` now returns `notify_ref` for edges, faces and vertices (and
+  their curves and surfaces), so the importers' owners, every `BrepQuery::default`
+  (merge p1/p4/p5, `query::api_queries`, heal, hcr) and the constructors' owners are one
+  identity, as upstream's pointers are. `trimming_tools` binds its faces' surfaces
+  under the edit's `env.key_of`. `Brep::geometry_owner_keys` (producer provenance used
+  by transforms) is untouched: it stores whatever key a producer bound, which for
+  arena-notified producers is now also the arena identity. The record collisions of the
+  arena keys (heal stitch p1's split-edge `key_of` gave face 3, edge 3 and vertex 3 one
+  `records` key) go away with it.
+- **Exposed gap, fixed.** Once the merge's queries found a created operand's surfaces,
+  the stitch's `FindAndSetInfiniteRegion` ray fire on the operand copy reached
+  `Surface::face_zone_tol_3d` for surfaces `CopyBrep`/`MergeBrep` had rebound with
+  `owner_mut` without the face tolerance (the `SmFace::GetTolerance` stub; 6
+  `boolean.api_brep` cases moved pass -> deferred). `topology::brep::p3` now syncs the
+  copied face's tolerance onto its surface, as `SetSurface` and `MakeFace` do; those 6
+  pass again and 6 earlier `GetTolerance` deferrals pass too.
+- **Residual (not fixed).** Edits run under kernel names (`with_kernel_callbacks`:
+  `topology::brep::p5` stitch via `plain_edit`, heal stitch, heal_data p3, brep p10,
+  primitive_creation p2 deletes) bind any geometry they own under
+  `topology_ref(serial, e)` and leave it so afterwards; p5's `set_edge_curve_owner`
+  re-owns surviving edge curves that way. A later `BrepQuery::default` (arena identity)
+  does not see those curves as edge-owned. No difftest case is known to reach a query
+  after such an edit. A fix would rebind the B-rep's own `topology_ref` owners to
+  `notify_ref` when `kernel_named_edit` returns (the mirror of `GeometryOwnerScope`),
+  keeping `geometry_owner_keys` consistent.
+- **Runners.** `topology.brep_cache` built its wire owners as `1e9 + index` by hand
+  (now its own `identity()`), and `topology.brep_p1` printed raw owner keys as face/edge
+  indices (now matched through `arena_identity`).

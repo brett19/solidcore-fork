@@ -264,8 +264,6 @@ fn identity(object: CacheObject) -> solidcore::geom::object::ObjectRef {
 fn add_wire(k: &Kernel, b: &mut Brep, data: [f64; 9]) -> SolidResult<solidcore::topology::EdgeId> {
     use solidcore::curve::curve::Curve;
     use solidcore::curve::line::Line;
-    use solidcore::geom::attribute::ObjectKey;
-    use solidcore::geom::object::ObjectRef;
     use solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType;
     use solidcore::topology::{Edge, Edgeuse, EdgeuseOwner, Shell, Vertexuse, VertexuseOwner};
     let [ax, ay, az, bx, by, bz, et, at, bt] = data;
