@@ -1374,6 +1374,8 @@ fn merge_brep_in(
         }
 
         b.geometry_owner_keys.insert(EntityRef::Face(new_f), owner);
+        // the copied surface reads its new face's tolerance through GetFace()
+        b.sync_face_surface_tolerance(new_f)?;
 
         // add newFace to target Brep FaceList
         b.face_list.push(new_f);
