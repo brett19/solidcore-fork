@@ -61,6 +61,7 @@ use super::p2::{
 use super::p4::{is_point_on_normal, NoObject};
 use super::p5::DropPointOptions;
 use super::p6::SampleOptions;
+use crate::intersect::surface_drop_lib::p3::DropSolveContext;
 use crate::curve::curve::p8::CurveIntersectOptions;
 use crate::curve::curve::{Curve, CurveKind};
 use crate::curve::line::Line;
@@ -228,7 +229,7 @@ fn sp_local_solve<O: SolutionObject>(
 
 /// `SmSurface::DropCurve(ctx, domain, curve, interval, tol, .., keepAll, NULL, FALSE)`
 /// (virtual): the UV curves of the drop, the largest drop distance and the deviation.
-fn surface_drop_curve(
+fn surface_drop_curve<O: SolutionObject>(
     k: &Kernel,
     surface: &Surface,
     domain: &Extent2d,
@@ -236,9 +237,24 @@ fn surface_drop_curve(
     interval: &Extent1d,
     tol: f64,
     keep_all: bool,
+    context: Option<(&mut (dyn SurfaceSolveContext<O> + '_), Option<O>)>,
 ) -> Result<(Vec<Curve>, f64, f64)> {
-    let d =
-        surface.drop_curve::<NoObject>(k, domain, curve, interval, tol, keep_all, None, false)?;
+    let d = match context {
+        // the surface's face is reached through the caller's face-aware context
+        Some((solver, handle)) => surface.drop_curve_with_context::<O>(
+            k,
+            domain,
+            curve,
+            interval,
+            tol,
+            keep_all,
+            None,
+            false,
+            DropSolveContext { solver, handle },
+        )?,
+        None => surface
+            .drop_curve::<NoObject>(k, domain, curve, interval, tol, keep_all, None, false)?,
+    };
     Ok((d.uv_curves, d.max_drop_to_surf, d.max_approx_dev))
 }
 
@@ -1672,7 +1688,7 @@ impl Surface {
 
             // Check Surface/LineSegment Coincidence (its point solve reaches the
             // surface's face through the caller's context, when there is one)
-            let found = if let Some(context) = context {
+            let found = if let Some(context) = context.as_mut().map(|c| &mut **c) {
                 self.simple_coincidence_checker_with_context::<O>(
                     k,
                     uv_domain,
@@ -1725,6 +1741,7 @@ impl Surface {
                         &line_interval_used,
                         distance_tolerance,
                         false,
+                        context.as_mut().map(|c| (&mut **c, surface)),
                     )?;
                     uv_curves = curves;
                     dist_to_surface = dist;
@@ -2236,6 +2253,7 @@ impl Surface {
                     interval,
                     distance_tolerance,
                     false,
+                    context.as_mut().map(|c| (&mut **c, surface_handle)),
                 ))? {
                     uv_curves = curves;
                     dist_to_surface = dist;
