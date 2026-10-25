@@ -20670,3 +20670,12 @@ All 8 vertex-order known mismatches (`upstream_merge_breps_operation_0..3`,
    `GeometryOwnerScope` resolve expected owners via `Brep::naming()` and
    `Brep::geometry_owner_key`, so `PiecewiseMerge` sees all 10 split faces of `Box_1`
    instead of dropping the 4 newly split faces.
+
+## offset.offset_executive_p2 gen0235: passes with the planar-path union imprint fix (2026-10-25)
+
+The `SM_ERR_NULL_POINTER` from `ProtoTopologyManager::imprint_edge_definition` recorded in
+'offset.offset_executive_p2 gen0235: imprint edge definition without its source topology'
+was the same early-stop as the planar-path union failures. With the fix from
+'primitive.primitive_creation_p2 planar-path union failures: an edge imprint that edits
+nothing need not stop the Boolean', the case passes with values, so its known-mismatch
+entry is removed.
