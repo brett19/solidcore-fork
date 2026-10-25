@@ -20629,3 +20629,17 @@ that stops before that point only warns, as upstream. The `boolean.topology_inte
 shim's copy of `IntersectInsertRelate` follows the same rule through a verbatim copy of
 `ImprintIntersections`, which tests the same `const` lookups before each edge imprint.
 All 7 cases now pass with values. Their known-mismatch entries are removed.
+
+## sweep.api_brep planar_path_connected: 5 faces where C++ makes 4 once ProjectAndTrim's side ray solve runs (2026-10-25)
+
+Unit `sweep.api_brep`, case `planar_path_connected` (`TestSmBrep.cpp:3096`: a circle profile
+swept along two connected lines with mitred ends, `iCapEnds = 3`). `ProjectAndTrim`'s side
+ray solve (`faces_to_delete`) used to stop at the face-owned `TrimSrfCache` stub, so the case
+was deferred. That solve now prepares the face caches on the B-rep, and with the planar-path
+union imprint fix stacked in, the sweep returns a B-rep. C++ gives `counts[0]` (faces) = 4,
+Rust gives 5 (max rel err 0.583 over the counts). The divergence is not in the ray solve:
+for this case every `faces_to_delete` face is decided by its vertex votes and no ray is fired
+(faces 0, 4, 5 vote left/right/right, `DeletePoint`, face 0 deleted). Without the union fix
+the Rust sweep fails before a result exists. Suspected cause: the merge/union of the
+trimmed sweep pieces keeps one face that C++ removes or merges. Not traced further. Listed in
+`crates/difftest/known_mismatches.toml`.
