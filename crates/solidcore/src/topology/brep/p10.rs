@@ -2083,7 +2083,7 @@ fn project_and_trim_body(
 /// direction.
 fn faces_to_delete(
     k: &mut Kernel,
-    b: &Brep,
+    b: &mut Brep,
     env: &ProjectEnv<'_>,
     curve: &BSplineCurve,
     direction: Vec3,
@@ -2147,7 +2147,7 @@ fn faces_to_delete(
             let vertex_keys: Vec<_> = vertices.iter().map(|&v| (env.brep_id, v)).collect();
             let shape = Shape::new(
                 k,
-                &(env.brep_id, b),
+                &(env.brep_id, &*b),
                 &[],
                 &[(env.brep_id, face)],
                 &edge_keys,
@@ -2155,7 +2155,7 @@ fn faces_to_delete(
             )?;
 
             // Find a ray to determine which face needs to be kept or deleted
-            let bbox = qbrep::calculate_bounding_box(k, b, BoundingBoxOptions::default())?;
+            let bbox = qbrep::calculate_bounding_box(k, &*b, BoundingBoxOptions::default())?;
             let sphere = bbox.sphere_bound();
             let param = line_closest_point(reference, direction, sphere.center);
             let projected_center = reference + direction * param;
@@ -2164,36 +2164,48 @@ fn faces_to_delete(
             let segment = Curve::from(BSplineCurve::create_line_segment(3, ray_start, ray_end)?);
 
             let cache = make_brep_cache(k, CacheSource::Brep(b), env.keys)?;
-            let objects = BrepObjects {
-                preparation: None,
-                brep: b,
-                brep_id: env.brep_id,
-                cache: Some(&cache),
-                keys: env.keys,
-                owner_of: env.owner_of,
-            };
             // the two output vectors of the solve (uninitialised upstream)
             let vectors = [Vec3::ZERO, Vec3::ZERO];
-            let solutions = TopologySolver::shape_curve_solve(
-                k,
-                &objects,
-                &shape,
-                CurveRef {
-                    curve: &segment,
-                    handle: CacheObject::Other(ObjectRef {
-                        type_code: BSPLINE_CURVE_TYPE,
-                        key: ObjectKey(0),
-                    }),
-                },
-                &segment.natural_interval(),
-                TopologySolveOptions {
-                    operation: SolverOperation::Minimize,
-                    requested: SolutionRequested::Single,
-                    tolerance_3d: b.tolerance(),
-                    best_answer_so_far_sq: BIG_DOUBLE,
-                    opt_vectors: &vectors,
-                },
-            )?;
+            // The face surfaces reach their faces' caches (`smsurf_GetSurfaceCache`,
+            // which may create UV trim curves on `b`): the read-only solve requests
+            // each missing cache or trim, prepared on `b` before the solve reruns.
+            let mut preparation = crate::query::brep::RayPreparation::default();
+            let solutions = loop {
+                let objects = BrepObjects {
+                    preparation: Some(&preparation),
+                    brep: b,
+                    brep_id: env.brep_id,
+                    cache: Some(&cache),
+                    keys: env.keys,
+                    owner_of: env.owner_of,
+                };
+                let result = TopologySolver::shape_curve_solve(
+                    k,
+                    &objects,
+                    &shape,
+                    CurveRef {
+                        curve: &segment,
+                        handle: CacheObject::Other(ObjectRef {
+                            type_code: BSPLINE_CURVE_TYPE,
+                            key: ObjectKey(0),
+                        }),
+                    },
+                    &segment.natural_interval(),
+                    TopologySolveOptions {
+                        operation: SolverOperation::Minimize,
+                        requested: SolutionRequested::Single,
+                        tolerance_3d: b.tolerance(),
+                        best_answer_so_far_sq: BIG_DOUBLE,
+                        opt_vectors: &vectors,
+                    },
+                );
+                match (result, preparation.take_request()) {
+                    (Err(SolidError::PreparationRequired { .. }), Some(request)) => {
+                        preparation.prepare(k, b, request)?;
+                    }
+                    (result, _) => break result?,
+                }
+            };
 
             let Some(first) = solutions.as_slice().first() else {
                 continue;
