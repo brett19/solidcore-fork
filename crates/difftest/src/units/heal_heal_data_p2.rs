@@ -1313,6 +1313,9 @@ fn rust_heal(
     // each vertex's vertex use order and the cached gaps, as upstream has them
     let extra = ffi::vertex_lists(&path, &block).map_err(|e| harness(format!("c++ lists: {e}")))?;
     restore(&mut b, &extra, c)?;
+    if !path.is_empty() {
+        super::topology_edgeuse_p1::seed_cache_tree_states(&b, &path, &block)?;
+    }
 
     let mut k = Kernel::default();
     let mut marks = Marks::default();

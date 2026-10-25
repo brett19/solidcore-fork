@@ -771,7 +771,9 @@ pub(crate) fn import_file(path: &str, rebuild: bool) -> Result<Brep, HarnessErro
             ex.get(1).copied().unwrap_or(0.0)
         )));
     };
-    Ok(import(&ex, graph_at)?.0)
+    let b = import(&ex, graph_at)?.0;
+    super::topology_edgeuse_p1::seed_cache_tree_states(&b, path, &block)?;
+    Ok(b)
 }
 
 /// The Rust B-rep of an export with this unit's extras applied, and the geometry
@@ -2149,6 +2151,12 @@ fn run_rust(i: &Inputs) -> Result<Output, HarnessError> {
         return Ok(build_failure(&ex));
     };
     let (mut b, types) = import(&ex, graph_at)?;
+    // a file's load-time heal leaves surface caches the export does not carry
+    if let Ok(path) = path_of(i.brep.as_ref()) {
+        if !path.is_empty() {
+            super::topology_edgeuse_p1::seed_cache_tree_states(&b, &path, &brep_block(i)?)?;
+        }
+    }
     let Some(op) = resolve(&i.op, c) else {
         return Ok(no_entity());
     };
