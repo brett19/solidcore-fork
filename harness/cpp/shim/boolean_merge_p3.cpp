@@ -128,6 +128,19 @@ SC_EXPORT int32_t sc_boolean_merge_p3_eval(const double* input, int64_t n,
         SmStatus status=SM_ERR;
         std::vector<double> values;
         if(family==5) { Graph graph; walk(originals[0],graph,true); export_graph(originals[0],graph,values);
+            // The B-rep's face, edge and vertex lists in their list order, as traversal
+            // indices (n then n entries): the export walk registers faces and vertices in
+            // first-seen order, and GetFaces / GetVertices order is observable (the
+            // face pairs IntersectTopology visits, GetSurfaces).
+            { SmTArray<SmFace*> fs; originals[0]->GetFaces(fs);
+              values.push_back((double)fs.GetSize());
+              for(ULONG i=0;i<fs.GetSize();++i) values.push_back(graph.find(3,fs[i]));
+              SmTArray<SmEdge*> es; originals[0]->GetEdges(es);
+              values.push_back((double)es.GetSize());
+              for(ULONG i=0;i<es.GetSize();++i) values.push_back(graph.find(7,es[i]));
+              SmTArray<SmVertex*> vs; originals[0]->GetVertices(vs);
+              values.push_back((double)vs.GetSize());
+              for(ULONG i=0;i<vs.GetSize();++i) values.push_back(graph.find(9,vs[i])); }
             delete originals[0]; *len=values.size(); if(*len>cap) return SC_ERR_BUFFER;
             std::copy(values.begin(),values.end(),out); return SC_OK; }
         if(family==6) {

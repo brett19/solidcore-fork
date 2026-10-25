@@ -20473,3 +20473,41 @@ after each call:
 `SmMerge::BooleanManifold` sets `SetDoingBoolean(TRUE)` (`SmMerge.cpp:2551`) and
 clears it only on its success exits (`:3114`, `:4148`, `:5095`); its `SER` error
 returns leave it set, as the port's `manifold_boolean_translated` does. No change.
+
+## boolean.merge_p3: the vertex-order and piecewise face-count mismatches came from the runner's operands (resolution)
+
+Resolves "boolean.merge_p3: vertex list order after merges that imprint edges into
+faces" and the operation_0/1/2 and piecewise_boxes_0/1 entries filed with the PR #816
+known mismatches (issue #832). These 8 cases had two causes, both in the runner rather
+than the kernel:
+
+- **Face and vertex list order of the operands.** The runner builds each operand box in
+  C++, exports it and imports it. The importer lists faces and vertices in the export
+  walk's first-seen order, not in the native `GetFaces` / `GetVertices` order (a box's
+  native face list is z0, z1, x0, x1, y0, y1; the imported list followed the shell's
+  face-use ring y1, y0, x0, z0, x1, z1). `IntersectTopology` visits face pairs in face
+  list order, so the proto edges came out in another order (C++ inserted the z = 3 and
+  z = 9 cuts before the x = 8 and y = 6 cuts, the port the other way round).
+  `MakeEdgeInFace` appends each split-off face use to the shell's ring, so the rings and
+  every walk-ordered vertex after them differed. Found by dumping shell rings, face
+  lists and `SmEdgeDefinition::Imprint` order on both sides (`--wrap` on the C++ side):
+  the rings first differ after `IntersectInsertRelate`, the face lists already before
+  it. Fix: the operand export appends the native face, edge and vertex list orders
+  and the runner applies them (`Brep::set_face_list` and friends), as
+  `query.api_queries` does. This fixed merge_breps operation_0..3 and piecewise_boxes_1,
+  2_keep_other and 3_keep_other.
+- **`GetSurfaces` after `PiecewiseMerge`'s first imprint** (piecewise_boxes_0: C++ 16
+  faces, port 15; mislabelled as vertex order). Upstream lists the 10 surfaces of the
+  imprinted other box (each split-off face owns a copy of its surface) and runs 10
+  per-surface merges; the port ran 6. The runner called the engine's
+  `IntersectInsertRelate` directly, so the surfaces of the faces it split off stayed
+  owned under the merge engine's notification namespace keys, and the runner's
+  `GetSurfaces` (owner == the face's arena identity) skipped them. `DependencyMerge`
+  hands such geometry back to the record's own name at the end of every merge
+  (`adopt_namespace_owners`); the first imprint had no such step, and the imported
+  operands had no naming scheme for it to apply. Fix: `MergeEngine::intersect_insert_relate`
+  runs the imprint and then the same adoption, and the runner marks its imported
+  operands `NamingScheme::Arena` (they carry arena-identity owners already).
+
+No tolerance changed; the kernel's merge code is unchanged apart from the new
+`MergeEngine` entry point. The 8 known-mismatch entries are removed.

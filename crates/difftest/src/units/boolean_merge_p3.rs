@@ -30,7 +30,7 @@ use solidcore::geom::attribute::{ids, Attribute, AttributeStore, Behavior, Objec
 use solidcore::geom::context::MarkLock;
 use solidcore::kernel::Kernel;
 use solidcore::topology::brep_cache::{arena_identity, CacheObject};
-use solidcore::topology::{brep::p1 as bp, Brep, FaceId};
+use solidcore::topology::{brep::p1 as bp, Brep, EdgeId, FaceId, VertexId};
 use solidcore::SolidError;
 use solidcore_ffi::units::boolean_merge_p3 as ffi;
 
@@ -325,6 +325,56 @@ fn native_brep(input: &mut &[f64], values: &mut Vec<f64>) -> Result<(), HarnessE
     record_brep(&brep, identity as i64, values).map_err(|error| harness(&error))
 }
 
+/// Splits an operand export (family 5) into its graph and the face, edge and vertex
+/// list orders the shim appends after it (`n` then `n` traversal indices each).
+fn split_list_orders(exported: &[f64]) -> Result<(&[f64], &[f64]), HarnessError> {
+    let mut tagged = vec![0.0];
+    tagged.extend(exported.get(..12).ok_or_else(|| harness("short operand export"))?);
+    let counts = solidcore_ffi::units::topology_edgeuse_p1::counts(&tagged)
+        .ok_or_else(|| harness("invalid operand export"))?;
+    let [faces, edges, vertices] = [3, 7, 9].map(|k| counts.get(k).copied().unwrap_or(0));
+    let len = faces
+        .checked_add(edges)
+        .and_then(|n| n.checked_add(vertices))
+        .and_then(|n| n.checked_add(3))
+        .ok_or_else(|| harness("list order overflow"))?;
+    let at = exported
+        .len()
+        .checked_sub(len)
+        .ok_or_else(|| harness("missing list orders"))?;
+    Ok(exported.split_at(at))
+}
+
+/// Puts the imported B-rep's face, edge and vertex lists in the native list order: the
+/// importer lists them in the export walk's first-seen order.
+fn set_list_orders(brep: &mut Brep, lists: &[f64]) -> Result<(), HarnessError> {
+    let mut rest = lists;
+    let mut next = || -> Result<Vec<u32>, HarnessError> {
+        let n = take_count(&mut rest)?;
+        let order = rest
+            .get(..n)
+            .ok_or_else(|| harness("short list order"))?
+            .iter()
+            .map(|&i| {
+                if i.is_finite() && i >= 0.0 && i.fract() == 0.0 && i <= f64::from(u32::MAX) {
+                    Ok(i as u32)
+                } else {
+                    Err(harness("invalid list order index"))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        rest = rest.get(n..).ok_or_else(|| harness("short list order"))?;
+        Ok(order)
+    };
+    let (faces, edges, vertices) = (next()?, next()?, next()?);
+    brep.set_face_list(faces.into_iter().map(FaceId::from_index).collect())
+        .map_err(|error| harness(&error))?;
+    brep.set_edge_list(edges.into_iter().map(EdgeId::from_index).collect())
+        .map_err(|error| harness(&error))?;
+    brep.set_vertex_list(vertices.into_iter().map(VertexId::from_index).collect())
+        .map_err(|error| harness(&error))
+}
+
 fn native_output(raw: &[f64], family: u8) -> Result<Output, HarnessError> {
     let mut input = raw;
     let status = take_number(&mut input)?;
@@ -406,9 +456,11 @@ impl Pool {
             .map_err(|error| harness(&error))?;
             // export_graph starts at validate_only; vertexuse import expects a
             // leading success tag. Geometry comes only from fixture construction.
+            let (graph, lists) = split_list_orders(&exported)?;
             let mut tagged = vec![0.0];
-            tagged.extend(&exported);
+            tagged.extend(graph);
             let (mut brep, _) = super::topology_vertexuse::import(&tagged)?;
+            set_list_orders(&mut brep, lists)?;
             // The vertexuse importer predates canonical arena owner keys. Each
             // edge's curve is owned by its edge, as natively (the export carries
             // no owner for edge curves); without this the B-rep cache leaves every
@@ -443,6 +495,10 @@ impl Pool {
                 brep.sync_face_surface_tolerance(face)
                     .map_err(|error| harness(&error))?;
             }
+            // The geometry is named under arena identities: geometry a merge makes takes
+            // the same naming when its namespace ends (adopt the merge's owners), so
+            // GetSurfaces lists a face's own surface, as upstream (owner == face).
+            brep.set_naming(solidcore::topology::NamingScheme::Arena);
             breps.push(brep);
         }
         Ok(Self {
@@ -685,17 +741,7 @@ impl PiecewiseAccess for Pool {
     }
     fn intersect_insert_relate(&mut self, k: &mut Kernel) -> solidcore::Result<()> {
         // m_vTI.IntersectInsertRelate() on the constructed merge's intersector
-        self.with_engine_pair(|engine, a, b| {
-            engine.intersector.intersect_insert_relate(
-                &mut BooleanKernels {
-                    primary: k,
-                    other: None,
-                },
-                a,
-                b,
-                &mut engine.attributes,
-            )
-        })
+        self.with_engine_pair(|engine, a, b| engine.intersect_insert_relate(k, a, b))
     }
     fn clear_relationships(&mut self) -> solidcore::Result<()> {
         self.engine_mut()?.intersector.clear_relationships()
@@ -1140,7 +1186,8 @@ mod tests {
         let mut input = inputs();
         input.family = 5;
         input.b.clear();
-        ffi::eval(&encode(&input)).unwrap()
+        let exported = ffi::eval(&encode(&input)).unwrap();
+        split_list_orders(&exported).unwrap().0.to_vec()
     }
 
     /// Both engines must complete each nested fixture with its expected vertex count.

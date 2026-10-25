@@ -10,6 +10,7 @@
 //! | [`boolean_lists_with_notifications`] | `SmMerge::BooleanLists` with caller notification state |
 //! | [`boolean_trees`] | `SmMerge::BooleanTrees` |
 //! | [`non_manifold_boolean`] | `SmMerge::NonManifoldBoolean` |
+//! | [`MergeEngine::intersect_insert_relate`] | `m_vTI.IntersectInsertRelate()` in `SmMerge::PiecewiseMerge` |
 //!
 //! Deviations: nullable owned arena B-reps replace pointers; `BooleanDriver` and
 //! `PiecewiseAccess` borrow the dependency owners' engine/storage rather than
@@ -41,7 +42,7 @@
 
 use super::p1::{MergeOptions, MergeState};
 use super::p2::MergeOperand;
-use super::p4::{BooleanKernels, KernelManifoldIntersector, ManifoldState};
+use super::p4::{BooleanKernels, KernelManifoldIntersector, ManifoldIntersector, ManifoldState};
 use crate::boolean::topology_intersector::p1::TopologyIntersector;
 use crate::error::{ignored, EntityRef, Result, SolidError};
 use crate::geom::a_object::BooleanOperation;
@@ -144,6 +145,53 @@ impl MergeEngine {
             attributes: AttributeStore::default(),
         })
     }
+
+    /// `m_vTI.IntersectInsertRelate()` on the engine's intersector, outside a
+    /// `ManifoldBoolean` (`PiecewiseMerge`'s first imprint). As at the end of a
+    /// merge, the geometry the imprint made (the surface of a face it split off) then
+    /// owns under its record's own name, since upstream's owner is the face itself:
+    /// the `GetSurfaces` that follows lists it.
+    ///
+    /// # Errors
+    ///
+    /// Those of the imprint and of the owner adoption (a dangling record).
+    pub fn intersect_insert_relate(
+        &mut self,
+        k: &mut Kernel,
+        primary: &mut Brep,
+        other: &mut Brep,
+    ) -> Result<()> {
+        let mut kernels = BooleanKernels {
+            primary: k,
+            other: None,
+        };
+        let imprinted = self.intersector.intersect_insert_relate(
+            &mut kernels,
+            primary,
+            other,
+            &mut self.attributes,
+        );
+        adopt_engine_owners(&self.intersector, Some(primary), Some(other))?;
+        imprinted
+    }
+}
+
+/// The engine's notification namespace (and its attribute store) ends with the
+/// merge: geometry the merge made owns under the record's own name in the B-rep's
+/// scheme, as every other record's geometry (upstream's owner is the record itself).
+fn adopt_engine_owners(
+    intersector: &KernelManifoldIntersector,
+    primary: Option<&mut Brep>,
+    other: Option<&mut Brep>,
+) -> Result<()> {
+    if let Some(namespace) = intersector.namespace() {
+        for (body, is_other) in [(primary, false), (other, true)] {
+            if let Some(body) = body {
+                crate::boolean::merge::p4::adopt_namespace_owners(body, namespace, is_other)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl DependencyMerge {
@@ -242,17 +290,7 @@ impl BooleanDriver for DependencyMerge {
             operation,
             caller_lock,
         )?;
-        // The engine's notification namespace (and its attribute store) ends with the
-        // merge: geometry the merge made owns under the record's own name in the
-        // B-rep's scheme, as every other record's geometry (upstream's owner is the
-        // record itself).
-        if let Some(namespace) = engine.intersector.namespace() {
-            for (body, is_other) in [(primary.as_mut(), false), (other.as_mut(), true)] {
-                if let Some(body) = body {
-                    crate::boolean::merge::p4::adopt_namespace_owners(body, namespace, is_other)?;
-                }
-            }
-        }
+        adopt_engine_owners(&engine.intersector, primary.as_mut(), other.as_mut())?;
         Ok(if assigned { primary.take() } else { None })
     }
 }
