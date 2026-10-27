@@ -61,9 +61,11 @@
 //!   ([`BrepIdentity::default`] assumes [`arena_identity`]). The ray fires may add
 //!   missing UV trim curves, which
 //!   upstream's `const` method does to the B-rep itself; [`BrepClassifier`] serves
-//!   callers that hold the B-rep shared and makes a private copy on the first ray fire
-//!   only ([`Brep::clone_standing_for_self`]: its geometry keeps its owners, which the
-//!   copy constructor resets, so the copy's cache still holds its curves and surfaces).
+//!   callers that hold the B-rep shared and makes a private copy on the first boundary
+//!   solve or ray fire ([`Brep::clone_standing_for_self`]: its geometry keeps its
+//!   owners, which the copy constructor resets, so the copy's cache still holds its
+//!   curves and surfaces). The boundary solve makes the face caches it reaches on that
+//!   copy, as `smsurf_GetSurfaceCache` does on the B-rep upstream.
 //!   A ray fire that fails with an ordinary error moves on to the next direction,
 //!   as a failing status does upstream; [`SolidError::Unported`] propagates.
 //! - **Out-params.** The evaluated point, normal or point and derivatives are the
@@ -841,7 +843,7 @@ impl LazyBrep<'_> {
 }
 
 /// The B-rep a classification runs on: the caller's, lent mutably, or one it holds
-/// shared, copied when a ray fire first needs it mutably.
+/// shared, copied when a boundary solve or ray fire first needs it mutably.
 enum Target<'t> {
     Own(&'t mut Brep),
     Shared {
@@ -875,8 +877,9 @@ impl Target<'_> {
 
 /// Point classification against a B-rep the caller holds shared: its [`BrepQuery`], and
 /// a private copy for the ray fires, which may add missing UV trim curves (upstream's
-/// `const` `Point3DClassify` adds them to the B-rep itself). The copy is made when a ray
-/// is first fired, so boundary hits and single-region B-reps copy nothing. Keep one per
+/// `const` `Point3DClassify` adds them to the B-rep itself). The copy is made when a
+/// boundary solve or ray fire first needs it, so only a single-region classification
+/// without boundary intersections copies nothing. Keep one per
 /// B-rep state and classify every point through it: the copy and the cache are made
 /// once.
 #[derive(Debug)]
@@ -931,8 +934,8 @@ impl<'a, 'b> BrepClassifier<'a, 'b> {
         self.copy.is_some()
     }
 
-    /// [`BrepQuery::point_3d_classify`] on the B-rep, copied when a ray fire first
-    /// needs it.
+    /// [`BrepQuery::point_3d_classify`] on the B-rep, copied when a boundary solve or
+    /// ray fire first needs it.
     ///
     /// # Errors
     ///
