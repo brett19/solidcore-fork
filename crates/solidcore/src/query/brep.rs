@@ -97,7 +97,6 @@ use crate::geom::extent3d::Extent3d;
 use crate::geom::global_solver::{SolutionRequested, SolverOperation};
 use crate::geom::object::ObjectRef;
 use crate::intersect::point_class::{PointClassType, PointClassification};
-use crate::intersect::topology_solver::p1::TopologySolver;
 use crate::intersect::topology_solver::p2::TopologySolveOptions;
 use crate::kernel::Kernel;
 use crate::math::{Point2, Point3, Vec3, BIG_DOUBLE};
@@ -650,29 +649,12 @@ impl<'a> BrepQuery<'a> {
             };
             // XSects point with the Brep verts, edges, and faces returning lowest dim
             // topology intersection found.
-            let solutions = match &mut target {
-                Target::Own(b) => {
-                    let cache = self.cache(k, b)?;
-                    solve_mutable_brep_point(k, b, &identity, cache, point, options)?
-                }
-                Target::Shared { .. } => {
-                    let b = target.shared();
-                    let objects = BrepObjects {
-                        preparation: None,
-                        brep: b,
-                        brep_id,
-                        cache: Some(self.cache(k, b)?),
-                        keys,
-                        owner_of,
-                    };
-                    TopologySolver::brep_point_solve(
-                        k,
-                        &objects,
-                        Some(CacheObject::Brep),
-                        point,
-                        options,
-                    )?
-                }
+            // The solve makes the face caches it reaches on the B-rep, as upstream's
+            // `smsurf_GetSurfaceCache` does: a shared target's private copy stands for it.
+            let solutions = {
+                let b = target.mutable()?;
+                let cache = self.cache(k, b)?;
+                solve_mutable_brep_point(k, b, &identity, cache, point, options)?
             };
 
             // when the point is on a Brep Face
@@ -1271,7 +1253,9 @@ mod tests {
         let mut classifier = BrepClassifier::new(&b, BrepIdentity::arena(BrepId::from_index(0)));
         let pc = classifier.point_3d_classify(&k, p, 1e-6, true).unwrap();
         assert_eq!(pc.object(), b.infinite_region().map(EntityRef::Region));
-        assert!(!classifier.has_copied());
+        // the boundary solve runs on the private copy (upstream's solve makes face caches
+        // on the B-rep itself); the caller's B-rep is untouched either way
+        assert!(classifier.has_copied());
     }
 
     #[test]
