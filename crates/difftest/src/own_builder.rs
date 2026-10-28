@@ -934,16 +934,30 @@ fn walk_order(
     vertex_lists_last: bool,
     skip_edge_list: bool,
 ) -> Result<Walk, SolidError> {
-    walk_order_from(b, prefix_lists, false, vertex_lists_last, skip_edge_list)
+    let prefix = if prefix_lists {
+        Prefix::Lists
+    } else {
+        Prefix::None
+    };
+    walk_order_from(b, prefix, vertex_lists_last, skip_edge_list)
 }
 
-/// [`walk_order`]; with `prefix_edges_vertices` the B-rep's edge and vertex lists
-/// (`GetEdges`, `GetVertices`, not the face list) are registered first, as the
-/// `SmMerge` shims' `native_graph` (`sc_merge_fixture.h`) does.
+/// The B-rep lists a traversal registers before the regions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Prefix {
+    /// None.
+    None,
+    /// The face, edge and vertex lists ([`Conventions::prefix_lists`]).
+    Lists,
+    /// The edge and vertex lists (`GetEdges`, `GetVertices`), as the `SmMerge` shims'
+    /// `native_graph` (`sc_merge_fixture.h`).
+    EdgesVertices,
+}
+
+/// [`walk_order`] with the lists `prefix` registered first.
 fn walk_order_from(
     b: &Brep,
-    prefix_lists: bool,
-    prefix_edges_vertices: bool,
+    prefix: Prefix,
     vertex_lists_last: bool,
     skip_edge_list: bool,
 ) -> Result<Walk, SolidError> {
@@ -959,7 +973,7 @@ fn walk_order_from(
         vertexuses: Reg::new(),
         vertices: Reg::new(),
     };
-    if prefix_edges_vertices {
+    if prefix == Prefix::EdgesVertices {
         for &id in b.edge_list() {
             g.edges.add(Some(id), EdgeId::index);
         }
@@ -967,7 +981,7 @@ fn walk_order_from(
             g.vertices.add(Some(id), VertexId::index);
         }
     }
-    if prefix_lists {
+    if prefix == Prefix::Lists {
         for &id in b.face_list() {
             g.faces.add(Some(id), FaceId::index);
         }
@@ -1196,7 +1210,7 @@ pub(crate) fn renumber_with(src: &Brep, conv: &Conventions<'_>) -> Result<Brep, 
 ///
 /// As [`renumber_with`].
 pub(crate) fn renumber_native_lists(src: &Brep) -> Result<Brep, HarnessError> {
-    let g = walk_order_from(src, false, true, false, false).map_err(solid)?;
+    let g = walk_order_from(src, Prefix::EdgesVertices, false, false).map_err(solid)?;
     renumber_walk(src, &Conventions::EDGEUSE_GRAPH, &g)
 }
 
