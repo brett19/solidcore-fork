@@ -179,14 +179,12 @@ struct Prepared {
     ang: f64,
 }
 
-fn prepare(i: &Inputs) -> Result<Prepared, HarnessError> {
+/// The programs, tolerances and the mates under the operands' entity counts `ac`, `bc`
+/// (each side's own: the C++ export's on the C++ side, the Rust build's on the Rust
+/// side).
+fn prepare_with(i: &Inputs, ac: [usize; 10], bc: [usize; 10]) -> Result<Prepared, HarnessError> {
     let a = p5::program(&i.primary)?;
     let b = i.other.as_ref().map(p5::program).transpose()?;
-    let ac = ffi::counts(p5::operand(&a)).map_err(|e| err(&e))?;
-    let bc = match &b {
-        Some(b) => ffi::counts(p5::operand(b)).map_err(|e| err(&e))?,
-        None => [0; 10],
-    };
     let mates = mates_of(&i.mates, ac, bc);
     Ok(Prepared {
         a,
@@ -543,23 +541,48 @@ fn handles<I: ArenaId>(brep: H, kind: u8, ids: &[I]) -> Vec<H> {
     ids.iter().map(|i| hd(brep.b, kind, i.index())).collect()
 }
 
-fn import_operand(p: &(String, Vec<f64>)) -> Result<Brep, HarnessError> {
-    p5::import(
-        &solidcore_ffi::units::boolean_merge_p5::export(p5::operand(p)).map_err(|e| err(&e))?,
-    )
+/// The C++ side's preparation: the mates under the C++ export's counts.
+fn prepare(i: &Inputs) -> Result<Prepared, HarnessError> {
+    let a = p5::program(&i.primary)?;
+    let b = i.other.as_ref().map(p5::program).transpose()?;
+    let ac = ffi::counts(p5::operand(&a)).map_err(|e| err(&e))?;
+    let bc = match &b {
+        Some(b) => ffi::counts(p5::operand(b)).map_err(|e| err(&e))?,
+        None => [0; 10],
+    };
+    prepare_with(i, ac, bc)
 }
 
-fn run_rust(i: &Inputs, p: &Prepared) -> Result<Output, HarnessError> {
-    let mut a = import_operand(&p.a)?;
-    let mut b = p.b.as_ref().map(import_operand).transpose()?;
-    let options = i.options.map(options_of);
+/// The Rust side: both operands built by the Rust kernel ([`p5::own_operand`]; no C++
+/// export reaches the Rust side), the mates under their own counts.
+fn run_rust_case(i: &Inputs) -> Result<Output, HarnessError> {
     let mut k = Kernel::default();
+    let a = p5::own_operand(&mut k, &i.primary)?;
+    let b = i
+        .other
+        .as_ref()
+        .map(|s| p5::own_operand(&mut k, s))
+        .transpose()?;
+    let ac = crate::own_builder::counts(&a);
+    let bc = b.as_ref().map_or([0; 10], crate::own_builder::counts);
+    let p = prepare_with(i, ac, bc)?;
+    run_rust(&mut k, i, &p, a, b)
+}
+
+fn run_rust(
+    k: &mut Kernel,
+    i: &Inputs,
+    p: &Prepared,
+    mut a: Brep,
+    mut b: Option<Brep>,
+) -> Result<Output, HarnessError> {
+    let options = i.options.map(options_of);
     let mut ids = Vec::new();
     let mut values = Vec::new();
     match &i.op {
         Op::Construct => {
             let m = match MergeState::<TopologyIntersector<H>>::with_breps(
-                &k,
+                k,
                 (&a, brep_h(0)),
                 b.as_ref().map(|b| (b, brep_h(1))),
                 p.tol,
@@ -660,7 +683,7 @@ fn run_rust(i: &Inputs, p: &Prepared) -> Result<Output, HarnessError> {
             match &i.op {
                 Op::MergeEdge { edgeuse, region } => {
                     match merge_edge(
-                        &mut k,
+                        k,
                         &mut a,
                         b,
                         opt_id::<EdgeuseId>(*edgeuse),
@@ -683,7 +706,7 @@ fn run_rust(i: &Inputs, p: &Prepared) -> Result<Output, HarnessError> {
                 } => {
                     let mut made = Vec::new();
                     match make_faceuse_attempt(
-                        &mut k,
+                        k,
                         &mut a,
                         b,
                         FaceuseId::from_index(u32::try_from(*faceuse).map_err(|e| err(&e))?),
@@ -718,7 +741,7 @@ fn run_rust(i: &Inputs, p: &Prepared) -> Result<Output, HarnessError> {
         }
         Op::MergeAddedTopology { .. } | Op::MergeAddedFace { .. } => {
             let mut state = match MergeState::<TopologyIntersector<H>>::with_breps(
-                &k,
+                k,
                 (&a, brep_h(0)),
                 None,
                 p.tol,
@@ -807,8 +830,7 @@ impl UnitDiff for Runner {
     }
     fn run_rust(&self, case: &Case) -> Result<Output, HarnessError> {
         let i: Inputs = case.parse()?;
-        let p = prepare(&i)?;
-        run_rust(&i, &p)
+        run_rust_case(&i)
     }
     fn generate(&self, rng: &mut Rng) -> Option<Value> {
         generate(rng)
@@ -817,8 +839,7 @@ impl UnitDiff for Runner {
 
 fn counts_of(spec: &Value) -> Option<[usize; 10]> {
     let spec: Spec = serde_json::from_value(spec.clone()).ok()?;
-    let p = p5::program(&spec).ok()?;
-    ffi::counts(p5::operand(&p)).ok()
+    p5::own_counts(&spec).ok()
 }
 
 /// Operands with faces: planar faces at several scales and B-rep files.

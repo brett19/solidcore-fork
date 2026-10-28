@@ -16,7 +16,7 @@ use solidcore::geom::object::ObjectRef;
 use solidcore::kernel::Kernel;
 use solidcore::topology::topology::Topology;
 use solidcore::topology::topology_traverser::{Entity, Marks};
-use solidcore::topology::{edge, vertex, vertexuse, Brep, EdgeId, VertexId, VertexuseId};
+use solidcore::topology::{edge, vertex, vertexuse, Brep, EdgeId};
 use solidcore_ffi::units::boolean_merge_p5::{self as ffi, Operand, Request};
 
 /// Differential runner for `SmMerge::ProcessWiresAndShellVertices`.
@@ -114,18 +114,59 @@ fn mapping(i: &Inputs, a: [usize; 10], b: [usize; 10]) -> Vec<i64> {
             .collect()
     })
 }
-pub(crate) fn import(
-    f: &solidcore_ffi::units::topology_topology_traverser::Fixture,
-) -> Result<Brep, HarnessError> {
-    let (mut b, _) = shared::import(&f.graph)?;
-    // (the B-rep cache of Point3DClassify's boundary solve reads geometry owners)
-    crate::util::own_arena_geometry(&mut b);
-    for (i, list) in f.vertexuses.iter().enumerate() {
-        b.vertex_mut(VertexId::from_index(i as u32))
-            .map_err(|e| err(&e))?
-            .vertexuses = list.iter().map(|&j| VertexuseId::from_index(j)).collect();
+/// The Rust B-rep of an operand, built by the Rust kernel as the shim's `operand`
+/// (`sc_merge_fixture.h`) builds it: `[5]` an empty `new SmBrep(SM_USE_DEFAULT,
+/// SM_USE_DEFAULT)`, `[4, x, y, z]` its `MakeShellVertex` on the infinite region, a
+/// B-rep block of the shared fixture `build` (an `.smb` file read by the Rust reader,
+/// every other kind by the Rust constructors; `validate_only` and `init_gaps` off) via
+/// [`crate::own_builder`]. It is renumbered into the shim's `native_graph` order (the
+/// edge list, the vertex list, then the traversal), so the mark and mate selectors name
+/// the same entities on both sides. No C++ export reaches the Rust side.
+///
+/// # Errors
+///
+/// A harness error when the build fails (the shim refuses a failed build with
+/// `SC_ERR_ARG`), for a malformed source or a dangling reference in the renumbering.
+pub(crate) fn own_operand(k: &mut Kernel, s: &Spec) -> Result<Brep, HarnessError> {
+    use crate::own_builder::{build_any, finish, in_new_brep, Built, Conventions};
+    use crate::units::topology_edgeuse_p1::BrepIn as Src;
+    let conv = &Conventions::EDGEUSE_GRAPH;
+    let built = match s {
+        Spec::Empty => {
+            let raw = in_new_brep(k, |_, _| Ok(()))?;
+            finish(k, raw, false, false, conv)?
+        }
+        Spec::Vertex { point } => build_any(
+            k,
+            &Src::Vertices {
+                points: vec![*point],
+            },
+            false,
+            false,
+            conv,
+        )?,
+        Spec::Graph { brep } => {
+            let src: Src = serde_json::to_value(brep)
+                .and_then(serde_json::from_value)
+                .map_err(|e| err(&format!("B-rep source: {e}")))?;
+            build_any(k, &src, false, false, conv)?
+        }
+    };
+    match built {
+        Built::Brep(b) => crate::own_builder::renumber_native_lists(&b),
+        Built::Failed(e) => Err(err(&format!("rust operand build failed: {e}"))),
     }
-    Ok(b)
+}
+
+/// The entity counts of a Rust-built operand ([`own_operand`]), in the export's kind
+/// order (region .. vertex), live records only.
+///
+/// # Errors
+///
+/// As [`own_operand`].
+pub(crate) fn own_counts(s: &Spec) -> Result<[usize; 10], HarnessError> {
+    let b = own_operand(&mut Kernel::default(), s)?;
+    Ok(crate::own_builder::counts(&b))
 }
 fn seed(
     k: &Kernel,
@@ -328,22 +369,16 @@ impl UnitDiff for Runner {
     }
     fn run_rust(&self, case: &Case) -> Result<Output, HarnessError> {
         let i: Inputs = case.parse()?;
-        let a = program(&i.primary)?;
-        let b = program(&i.other)?;
-        let aa = ffi::export(operand(&a)).map_err(|e| err(&e))?;
-        let bb = ffi::export(operand(&b)).map_err(|e| err(&e))?;
-        let ac = solidcore_ffi::units::topology_vertexuse::counts(&aa.graph)
-            .ok_or_else(|| err("primary graph"))?;
-        let bc = solidcore_ffi::units::topology_vertexuse::counts(&bb.graph)
-            .ok_or_else(|| err("other graph"))?;
+        let mut k = Kernel::default();
+        let mut a = own_operand(&mut k, &i.primary)?;
+        let mut b = own_operand(&mut k, &i.other)?;
+        let ac = crate::own_builder::counts(&a);
+        let bc = crate::own_builder::counts(&b);
         let edge_mates = mapping(&i, ac, bc);
         ffi::validate_mates(&edge_mates, ac[7], bc[7]).map_err(|e| err(&e))?;
-        let mut a = import(&aa)?;
-        let mut b = import(&bb)?;
         // the shim's caller state: editing on for both B-reps (SmMerge.cpp:2645-2646)
         a.set_editing_enabled(true);
         b.set_editing_enabled(true);
-        let mut k = Kernel::default();
         let la = MarkLock::new(std::slice::from_mut(&mut k.context), 0, i.marks[0])
             .map_err(|e| err(&e))?;
         let lb = if i.marks[0] == i.marks[1] {
@@ -490,9 +525,7 @@ impl UnitDiff for Runner {
         // actual edges because tiny face domains can collapse during setup.
         let edge_count = |v: &Value| {
             let spec: Spec = serde_json::from_value(v.clone()).ok()?;
-            let p = program(&spec).ok()?;
-            let f = ffi::export(operand(&p)).ok()?;
-            solidcore_ffi::units::topology_vertexuse::counts(&f.graph).map(|c| c[7])
+            own_counts(&spec).ok().map(|c| c[7])
         };
         let primary_edges = edge_count(&primary)?;
         let other_edges = edge_count(&other)?;

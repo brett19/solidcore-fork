@@ -934,6 +934,19 @@ fn walk_order(
     vertex_lists_last: bool,
     skip_edge_list: bool,
 ) -> Result<Walk, SolidError> {
+    walk_order_from(b, prefix_lists, false, vertex_lists_last, skip_edge_list)
+}
+
+/// [`walk_order`]; with `prefix_edges_vertices` the B-rep's edge and vertex lists
+/// (`GetEdges`, `GetVertices`, not the face list) are registered first, as the
+/// `SmMerge` shims' `native_graph` (`sc_merge_fixture.h`) does.
+fn walk_order_from(
+    b: &Brep,
+    prefix_lists: bool,
+    prefix_edges_vertices: bool,
+    vertex_lists_last: bool,
+    skip_edge_list: bool,
+) -> Result<Walk, SolidError> {
     let mut g = Walk {
         regions: Reg::new(),
         shells: Reg::new(),
@@ -946,6 +959,14 @@ fn walk_order(
         vertexuses: Reg::new(),
         vertices: Reg::new(),
     };
+    if prefix_edges_vertices {
+        for &id in b.edge_list() {
+            g.edges.add(Some(id), EdgeId::index);
+        }
+        for &id in b.vertex_list() {
+            g.vertices.add(Some(id), VertexId::index);
+        }
+    }
     if prefix_lists {
         for &id in b.face_list() {
             g.faces.add(Some(id), FaceId::index);
@@ -1163,6 +1184,24 @@ pub(crate) fn renumber_with(src: &Brep, conv: &Conventions<'_>) -> Result<Brep, 
         conv.skip_edge_list,
     )
     .map_err(solid)?;
+    renumber_walk(src, conv, &g)
+}
+
+/// [`renumber_with`] into the order of the `SmMerge` shims' `native_graph`
+/// (`sc_merge_fixture.h`): the edge list, the vertex list, then the shim's `walk`
+/// (`sc_topology_fixture.h`), with geometry owned under [`Conventions::EDGEUSE_GRAPH`]'s
+/// arena identities.
+///
+/// # Errors
+///
+/// As [`renumber_with`].
+pub(crate) fn renumber_native_lists(src: &Brep) -> Result<Brep, HarnessError> {
+    let g = walk_order_from(src, false, true, false, false).map_err(solid)?;
+    renumber_walk(src, &Conventions::EDGEUSE_GRAPH, &g)
+}
+
+/// The copy of `src` whose arena ids are the positions of the walk `g`.
+fn renumber_walk(src: &Brep, conv: &Conventions<'_>, g: &Walk) -> Result<Brep, HarnessError> {
     // the geometry `src` itself counts as owned by its face / edge (`GetSurfaces` /
     // `GetCurves`, under its own naming; either errs on a face without surface or an
     // edge without curve, then any recorded owner counts): relabelled to the new ids
@@ -1176,7 +1215,7 @@ pub(crate) fn renumber_with(src: &Brep, conv: &Conventions<'_>) -> Result<Brep, 
         .into_iter()
         .map(std::ptr::from_ref)
         .collect();
-    let m = Map(&g);
+    let m = Map(g);
     let mut b = Brep::new();
     b.set_validate_only(src.validate_only());
     b.set_tolerance(src.tolerance());
