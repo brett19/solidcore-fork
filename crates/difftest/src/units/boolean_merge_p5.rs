@@ -1,5 +1,6 @@
-//! Wire/shell-vertex boolean stage on identical raw input topology. Construction
-//! uses the shared real-B-rep fixture builder; no C++ merge results enter Rust.
+//! Wire/shell-vertex boolean stage on identical input topology. The C++ side builds
+//! each operand with the shared real-B-rep fixture builder, the Rust side builds the
+//! same recipe with the Rust kernel ([`own_operand`]); no C++ state enters Rust.
 use super::boolean_merge_p1::Canon;
 use super::topology_vertexuse::{self as shared, BrepIn};
 use crate::{Case, HarnessError, Output, Rng, UnitDiff};
@@ -159,12 +160,14 @@ pub(crate) fn own_operand(k: &mut Kernel, s: &Spec) -> Result<Brep, HarnessError
 }
 
 /// The entity counts of a Rust-built operand ([`own_operand`]), in the export's kind
-/// order (region .. vertex), live records only.
+/// order (region .. vertex), for an operand the shim's input guard accepts.
 ///
 /// # Errors
 ///
 /// As [`own_operand`].
 pub(crate) fn own_counts(s: &Spec) -> Result<[usize; 10], HarnessError> {
+    // only operands the shim's input guard accepts (as the C++ export's counts were)
+    ffi::check_operand(operand(&program(s)?)).map_err(|e| err(&e))?;
     let b = own_operand(&mut Kernel::default(), s)?;
     Ok(crate::own_builder::counts(&b))
 }

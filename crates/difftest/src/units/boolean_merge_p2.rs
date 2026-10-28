@@ -3,9 +3,10 @@
 //! topology. C++: `solidcore_ffi::units::boolean_merge_p2`. Rust:
 //! `solidcore::boolean::merge::p2`.
 //!
-//! Operands are built by the shared real-B-rep fixture builder of `boolean.merge_p5`
-//! and imported into Rust as raw arena records before either side runs; the fixture's
-//! mates are established on both sides with `Relate` (edges, vertices, faces). Outputs
+//! Operands are built by each side itself from the same construction recipe: the C++
+//! side by the shared real-B-rep fixture builder of `boolean.merge_p5`, the Rust side by
+//! the Rust kernel ([`p5::own_operand`], renumbered into the shim's native order; no C++
+//! export reaches the Rust side); the fixture's mates are established on both sides with `Relate` (edges, vertices, faces). Outputs
 //! are the request's results followed by snapshots of the operands, as `merge_p5`'s.
 //! `MergeAddedTopology` runs on the Rust side through the intersector runner's
 //! two-B-rep adapter (`Two`), which implements [`MergeBrep`] here.

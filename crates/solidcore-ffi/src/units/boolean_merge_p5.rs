@@ -71,6 +71,16 @@ fn invalid() -> FfiError {
     FfiError::InvalidArgument("boolean.merge_p5 fixture or request".into())
 }
 
+/// The input guard of [`export`] and [`eval`] alone (no C++ call): whether the shim
+/// accepts the operand's construction block.
+///
+/// # Errors
+///
+/// [`FfiError::InvalidArgument`] for a block the shim refuses.
+pub fn check_operand(o: Operand<'_>) -> Result<(), FfiError> {
+    validate(o).map(|_| ())
+}
+
 fn validate(o: Operand<'_>) -> Result<CString, FfiError> {
     let path = CString::new(o.path).map_err(|_| invalid())?;
     match o.block.first().copied() {
