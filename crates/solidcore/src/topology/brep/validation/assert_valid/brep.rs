@@ -278,6 +278,22 @@ fn tolerances_validate_only(k: &mut Kernel, b: &mut Brep, cx: &mut Cx<'_>) -> Re
             let start_face_gap = tvu::vertex_face_gap(k, b, start_vu, false)?;
             let end_edge_gap = tvu::vertex_edge_gap(k, b, end_vu, false)?;
             let end_face_gap = tvu::vertex_face_gap(k, b, end_vu, false)?;
+            // upstream holds pointers to the vertex uses' cached gaps and reads them
+            // only now: a later gap calculation resets the cached gaps of the vertex's
+            // other uses on the same edge or face (a closed edge's start and end use),
+            // which then read as the reset value
+            let start_edge_gap = match start_edge_gap {
+                Some(_) => Some(b.vertexuse(start_vu)?.vertex_edge_gap),
+                None => None,
+            };
+            let start_face_gap = match start_face_gap {
+                Some(_) => Some(b.vertexuse(start_vu)?.vertex_face_gap),
+                None => None,
+            };
+            let end_edge_gap = match end_edge_gap {
+                Some(_) => Some(b.vertexuse(end_vu)?.vertex_edge_gap),
+                None => None,
+            };
             let start_tol = b.vertex(start_v)?.tolerance;
             let end_tol = b.vertex(end_v)?.tolerance;
 
