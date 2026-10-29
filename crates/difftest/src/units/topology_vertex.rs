@@ -910,6 +910,10 @@ fn import(ex: &[f64]) -> Result<(Brep, Option<i64>), HarnessError> {
         b.add_vertexuse_record(vu)
             .map_err(|e| harness(e.to_string()))?;
     }
+    // Every face surface is owned by its face, as in the C++ B-rep (and as
+    // `own_builder` builds it): the surface point solves take their loose tolerance
+    // from the owner (`SmTol::GetZoneTol3d(GetOwner())`).
+    crate::util::own_face_surfaces(&mut b, CONVENTIONS.face_owner);
     Ok((b, rd.inexact))
 }
 
