@@ -210,11 +210,27 @@ fn own_brep(k: &mut Kernel, src: &Src) -> Result<Result<Brep, Output>, HarnessEr
         Built::Brep(b) => {
             let mut b = *b;
             b.set_naming(NamingScheme::Notify);
+            own_uv_trim_curves(&mut b);
             Ok(b)
         }
         Built::Failed(e) => Err(Output::unported(&e)
             .unwrap_or_else(|| Output::rejected("native fixture construction failed"))),
     })
+}
+/// Gives every UV trim curve its edge use as owner, under [`key`], as the C++ B-rep
+/// holds it (`SmEdgeuse::SetUVTrimCurve`): the native builders leave the trims they make
+/// unowned for the caller to name (`NamingScheme::Unknown`), and `SmEdgeuse::AssertValid`
+/// test 6 compares the owner with the edge use.
+fn own_uv_trim_curves(b: &mut Brep) {
+    let brep = key(EntityRef::Brep(solidcore::topology::BrepId::from_index(0)));
+    let edgeuses: Vec<EdgeuseId> = b.edgeuses().ids().collect();
+    for eu in edgeuses {
+        if let Some(c) = b.edgeuse_mut(eu).ok().and_then(|r| r.uv_trim_curve.as_mut()) {
+            if c.owner().is_none() {
+                let _ = c.set_owner(Some(key(EntityRef::Edgeuse(eu))), Some(brep));
+            }
+        }
+    }
 }
 fn orient(v: f64) -> solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType {
     use solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType;
