@@ -58,8 +58,8 @@ use super::intersect_surface_drop_lib_p2::{
     add3, ffi_curve, gen_knots, gen_scale, pick, rust_curve, scale3, unit_dir, CurveIn,
 };
 use super::query_brep::{gen_box_solid, gen_points_brep};
-use super::query_face_p1::{everything, inexact, model};
-use super::topology_edgeuse_p1::fixture_input;
+use super::query_face_p1::{model, Model};
+use super::topology_edgeuse_p1::{fixture_input, import_with_types};
 use crate::case::CaseContext;
 use crate::runner::default_cases;
 use crate::{Case, HarnessError, Output, Rng, UnitDiff};
@@ -357,10 +357,60 @@ fn cpp_brep(i: &Inputs) -> Result<Output, HarnessError> {
     }
 }
 
+/// Upstream surface type codes the shared B-rep export carries exactly.
+const EXACT_SURFACES: [i64; 2] = [15002, 15011];
+
+/// The deferral label of geometry the shared B-rep export flattens to its B-spline part
+/// (a harness limitation, as in `topology.brep_p1`).
+const HARNESS_ANALYTIC_IMPORT: &str = "harness:analytic-geometry-export";
+
+/// The deferral of a case whose B-rep holds a face surface or edge curve the import
+/// keeps only as its B-spline part (formerly `query_face_p1::inexact`, which #1740
+/// removed when `query.face_p1` moved to Rust-built inputs; kept here unchanged so this
+/// runner's inputs and deferrals stay the same). The types come from the same C++
+/// export [`model`] imports, so they index the same arena.
+fn inexact(m: &Model) -> Result<Option<Output>, HarnessError> {
+    use solidcore::curve::curve::p2::{BSPLINE_CURVE_TYPE, CRV_ON_SURF_TYPE, LINE_TYPE};
+    use solidcore_ffi::units::topology_edgeuse_p1 as graph;
+    let export = graph::eval(graph::Op::Export, &m.path, &m.block)
+        .map_err(|e| HarnessError::new(format!("c++ export: {e}")))?;
+    let (_, types) = import_with_types(&export)?;
+    for (f, _) in m.brep.faces().iter() {
+        let st = types.inexact_surface(f.index() as usize).unwrap_or(-1);
+        if st >= 0 && !EXACT_SURFACES.contains(&st) {
+            let (unit, symbol) = match st {
+                // the gap is the missing `SurfaceKind` variant (the `SmSurface` dispatch,
+                // unit `surface.surface_p2`; #76), not the kinds' own units (all ported)
+                15012 | 15013 => ("surface.surface_p2", "SurfaceKind::Cone (SmCone)"),
+                15014 => ("surface.surface_p2", "SurfaceKind::Sphere (SmSphere)"),
+                15015 => ("surface.surface_p2", "SurfaceKind::Torus (SmTorus)"),
+                15030 => (
+                    HARNESS_ANALYTIC_IMPORT,
+                    "SmSurfOfExtrusion face surface not exported exactly",
+                ),
+                _ => (
+                    HARNESS_ANALYTIC_IMPORT,
+                    "analytic face surface in the B-rep export",
+                ),
+            };
+            return Ok(Some(Output::deferred(unit, symbol)));
+        }
+    }
+    for (e, _) in m.brep.edges().iter() {
+        let ct = types.inexact_curve(e.index() as usize).unwrap_or(-1);
+        if ct >= 0 && ![BSPLINE_CURVE_TYPE, LINE_TYPE, CRV_ON_SURF_TYPE].contains(&ct) {
+            return Ok(Some(Output::deferred(
+                HARNESS_ANALYTIC_IMPORT,
+                "analytic edge curve in the B-rep export",
+            )));
+        }
+    }
+    Ok(None)
+}
+
 fn rust_brep(i: &Inputs) -> Result<Output, HarnessError> {
     let m = model(brep_value(i)?)?;
-    let (faces, edges) = everything(&m.brep);
-    if let Some(o) = inexact(&m, &faces, &edges) {
+    if let Some(o) = inexact(&m)? {
         return Ok(o);
     }
     let mut b = m.brep;
