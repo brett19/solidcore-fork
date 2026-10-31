@@ -8,7 +8,9 @@
 //!
 //! The round of a cube's edge between two perpendicular planes with radius `r(s)` removes
 //! `(1 - pi/4) r(s)^2` of each section, so the volume removed is `(1 - pi/4)` times the
-//! integral of `r^2` along the edge, in closed form for a polynomial law.
+//! integral of `r^2` along the edge, in closed form for a polynomial law. SolidCraft's
+//! taper of a wedge's top front edge from 13.5 to 0 at its tip is checked against the
+//! fork's C++ volume (5223.038586039; upstream 5212.97).
 
 #![allow(
     clippy::unwrap_used,
@@ -19,6 +21,7 @@
 
 use solidcore::blend::fillet_executive::session::FilletSession;
 use solidcore::blend::fillet_standard_solver::p1::FilletLaw;
+use solidcore::curve::curve::Curve;
 use solidcore::geom::attribute::{AttributeStore, ObjectKey};
 use solidcore::geom::extent1d::Extent1d;
 use solidcore::mass::integrator::properties::{brep_volume, PropertyAttributes};
@@ -26,9 +29,11 @@ use solidcore::math::{Point3, Vec3};
 use solidcore::nurbs::b_spline_curve::p1::{
     BSplineCurve, BSplineCurveForm, CanonicalData, KnotType,
 };
+use solidcore::primitive::api_curves::create_line_segment;
 use solidcore::primitive::api_primitives::create_box;
 use solidcore::query::api_queries::surface_closest_point;
 use solidcore::surface::surface::SurfaceKind;
+use solidcore::sweep::api_brep::create_linear_sweep;
 use solidcore::topology::face::p2 as face;
 use solidcore::topology::{edge, EdgeId};
 use solidcore::{Brep, Kernel};
@@ -170,4 +175,104 @@ fn variable_round_on_planes_keeps_upstreams_volume_without_the_fix() {
         "{v} vs {expected}"
     );
     assert!(off > 5e-4, "{off}");
+}
+
+/// SolidCraft's wedge: the triangle (0, 0), (40, 0), (0, 20) extruded over z 0..15
+/// (volume 6000).
+fn wedge(k: &mut Kernel) -> Brep {
+    const PROFILE: [[f64; 2]; 3] = [[0.0, 0.0], [40.0, 0.0], [0.0, 20.0]];
+    let cs: Vec<Curve> = PROFILE
+        .iter()
+        .zip(PROFILE.iter().cycle().skip(1))
+        .map(|(a, b)| {
+            Curve::from(
+                create_line_segment(Vec3::new(a[0], a[1], 0.0), Vec3::new(b[0], b[1], 0.0))
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let refs: Vec<Option<&Curve>> = cs.iter().map(Some).collect();
+    create_linear_sweep(k, &refs, Vec3::new(0.0, 0.0, 1.0), 15.0, true).unwrap()
+}
+
+/// SolidCraft's taper law (degree 3, measured from (0, 0, 15)): 13.5 over the first
+/// eighth, falling to 0 at the tip.
+const WEDGE_RADII: [f64; 11] = [
+    13.499_999_999_999_998,
+    13.499_992_370_605_47,
+    13.499_992_370_605_47,
+    13.499_992_370_605_47,
+    11.249_992_370_605_47,
+    8.999_992_370_605_47,
+    6.749_992_370_605_47,
+    4.499_992_370_605_469,
+    2.249_992_370_605_468_8,
+    0.749_992_370_605_468_9,
+    0.0,
+];
+
+/// The wedge's volume after its top front edge, (0, 0, 15) to the tip (40, 0, 15), is
+/// rounded on [`WEDGE_RADII`].
+fn rounded_wedge(fixed: bool) -> f64 {
+    let mut k = Kernel::default();
+    k.fixes.fillet_variable_span_follows_fillet = fixed;
+    let mut b = wedge(&mut k);
+    let start = Point3::new(0.0, 0.0, 15.0);
+    let e = edge_between(&k, &b, start, Point3::new(40.0, 0.0, 15.0));
+    // the law runs from `start`: reversed when the edge runs from the tip
+    let ivl = edge::interval(&b, e).unwrap();
+    let from_start = edge::curve(&b, e)
+        .unwrap()
+        .unwrap()
+        .evaluate_point(&k, ivl.min())
+        .unwrap()
+        .distance(start)
+        < 1e-9;
+    let mut radii = WEDGE_RADII;
+    if !from_start {
+        radii.reverse();
+    }
+    let control: Vec<Vec3> = radii.iter().map(|&r| Vec3::new(r, 0.0, 0.0)).collect();
+    let curve = BSplineCurve::create_canonical(&CanonicalData {
+        dim: 3,
+        degree: 3,
+        control_points: &control,
+        form: BSplineCurveForm::default(),
+        knot_multiplicities: &[4, 1, 1, 1, 1, 1, 1, 1, 4],
+        knots: &[0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0],
+        knot_type: KnotType::default(),
+        weights: None,
+        trim: None,
+    })
+    .unwrap();
+    let law = FilletLaw::bspline(curve, &Extent1d::from_min_max(0.0, 1.0));
+    {
+        let mut session = FilletSession::new(&mut k, &mut b).unwrap();
+        session
+            .prepare_variable_radius_edges(&mut k, &[e], radii[0], law, 1, 1)
+            .unwrap();
+        session.do_fillet(&mut k).unwrap();
+    }
+    volume(&k, &mut b)
+}
+
+/// The fork's volume of SolidCraft's taper after its fix (SMLib 2fc375f).
+const FORK_WEDGE_VOLUME: f64 = 5_223.038_586_039;
+
+#[test]
+fn wedge_taper_removes_the_forks_volume() {
+    let v = rounded_wedge(true);
+    let rel = (v - FORK_WEDGE_VOLUME).abs() / FORK_WEDGE_VOLUME;
+    eprintln!("wedge fixed: {v} fork {FORK_WEDGE_VOLUME} rel {rel:e}");
+    // the fork's C++ to 1e-9 relative (4.2e-10 here, the volume integration's residue)
+    assert!(rel < 1e-9, "{v} vs {FORK_WEDGE_VOLUME}");
+}
+
+#[test]
+fn wedge_taper_keeps_upstreams_volume_without_the_fix() {
+    let v = rounded_wedge(false);
+    let rel = (v - FORK_WEDGE_VOLUME).abs() / FORK_WEDGE_VOLUME;
+    eprintln!("wedge upstream: {v} fork {FORK_WEDGE_VOLUME} rel {rel:e}");
+    // the fork's 5212.9 before its fix: 10 mm3 more removed (1.9e-3 relative)
+    assert!(rel > 1e-3, "{v} vs {FORK_WEDGE_VOLUME}");
 }
